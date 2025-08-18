@@ -1,0 +1,21 @@
+# Normalize line endings for text; keep Unity YAML consistently LF
+* text=auto
+
+# Unity YAML files (must be LF for safe merges across OS)
+*.meta      text eol=lf
+*.unity     text eol=lf
+*.prefab    text eol=lf
+*.mat       text eol=lf
+*.anim      text eol=lf
+*.asset     text eol=lf
+*.controller text eol=lf
+
+# Treat common binaries as binary (no diffs)
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.ogg binary
+*.mp3 binary
+*.wav binary
+*.ttf binary
+*.fbx binary

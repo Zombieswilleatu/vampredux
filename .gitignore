@@ -1,0 +1,30 @@
+# Unity
+[Ll]ibrary/
+[Tt]emp/
+[Oo]bj/
+[Bb]uilds/
+[Bb]uild/
+[Ll]ogs/
+[Mm]emoryCaptures/
+[Uu]ser[Ss]ettings/
+*.csproj
+*.sln
+*.user
+*.pidb
+*.booproj
+*.svd
+*.pdb
+*.mdb
+*.opendb
+*.VC.db
+.vs/
+.idea/
+.gradle/
+.DS_Store
+
+# Rider / VSCode / etc.
+.vscode/
+*.DotSettings.user
+
+# Auto-generated
+/Assets/Plugins/Editor/JetBrains*
