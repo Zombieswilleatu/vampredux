@@ -1,0 +1,340 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!1 &5337136714696941629
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 7817989324537197459}
+  - component: {fileID: 368512322590862263}
+  - component: {fileID: 1189361999231232167}
+  - component: {fileID: 8836845526712407743}
+  - component: {fileID: 578489453591214540}
+  - component: {fileID: -8945442767471094536}
+  m_Layer: 7
+  m_Name: Enemy 1 1
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!4 &7817989324537197459
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 5337136714696941629}
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalPosition: {x: -17.16976, y: -4.1298265, z: 0}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 0}
+  m_RootOrder: 0
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!212 &368512322590862263
+SpriteRenderer:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 5337136714696941629}
+  m_Enabled: 1
+  m_CastShadows: 0
+  m_ReceiveShadows: 0
+  m_DynamicOccludee: 1
+  m_StaticShadowCaster: 0
+  m_MotionVectors: 1
+  m_LightProbeUsage: 1
+  m_ReflectionProbeUsage: 1
+  m_RayTracingMode: 0
+  m_RayTraceProcedural: 0
+  m_RenderingLayerMask: 1
+  m_RendererPriority: 0
+  m_Materials:
+  - {fileID: 10754, guid: 0000000000000000f000000000000000, type: 0}
+  m_StaticBatchInfo:
+    firstSubMesh: 0
+    subMeshCount: 0
+  m_StaticBatchRoot: {fileID: 0}
+  m_ProbeAnchor: {fileID: 0}
+  m_LightProbeVolumeOverride: {fileID: 0}
+  m_ScaleInLightmap: 1
+  m_ReceiveGI: 1
+  m_PreserveUVs: 0
+  m_IgnoreNormalsForChartDetection: 0
+  m_ImportantGI: 0
+  m_StitchLightmapSeams: 1
+  m_SelectedEditorRenderState: 0
+  m_MinimumChartSize: 4
+  m_AutoUVMaxDistance: 0.5
+  m_AutoUVMaxAngle: 89
+  m_LightmapParameters: {fileID: 0}
+  m_SortingLayerID: 0
+  m_SortingLayer: 0
+  m_SortingOrder: 0
+  m_Sprite: {fileID: -2413806693520163455, guid: a86470a33a6bf42c4b3595704624658b, type: 3}
+  m_Color: {r: 1, g: 1, b: 1, a: 1}
+  m_FlipX: 0
+  m_FlipY: 0
+  m_DrawMode: 0
+  m_Size: {x: 1, y: 1}
+  m_AdaptiveModeThreshold: 0.5
+  m_SpriteTileMode: 0
+  m_WasSpriteAssigned: 1
+  m_MaskInteraction: 0
+  m_SpriteSortPoint: 0
+--- !u!58 &1189361999231232167
+CircleCollider2D:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 5337136714696941629}
+  m_Enabled: 1
+  m_Density: 1
+  m_Material: {fileID: 0}
+  m_IsTrigger: 0
+  m_UsedByEffector: 0
+  m_UsedByComposite: 0
+  m_Offset: {x: 0, y: 0}
+  serializedVersion: 2
+  m_Radius: 0.5
+--- !u!50 &8836845526712407743
+Rigidbody2D:
+  serializedVersion: 4
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 5337136714696941629}
+  m_BodyType: 0
+  m_Simulated: 1
+  m_UseFullKinematicContacts: 0
+  m_UseAutoMass: 0
+  m_Mass: 1
+  m_LinearDrag: 0
+  m_AngularDrag: 0.05
+  m_GravityScale: 0
+  m_Material: {fileID: 0}
+  m_Interpolate: 0
+  m_SleepingMode: 1
+  m_CollisionDetection: 1
+  m_Constraints: 0
+--- !u!114 &578489453591214540
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 5337136714696941629}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: dc9e13960bba338449371a7eda1c4ce2, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  commsSkill: 10
+  isLeader: 0
+  leaderSkillBoost: 2
+  shareNewestFirst: 1
+  debugComms: 0
+  shareBiasMin: 0
+  shareBiasMax: 0.98
+  obeyBiasMin: 0
+  obeyBiasMax: 0.98
+  recipientsMinMax: {x: 1, y: 16}
+  shareKeysCapMinMax: {x: 0, y: 128}
+  ingestCapMinMax: {x: 0, y: 128}
+  probeRadiusMinMax: {x: 0, y: 16}
+  baseWindowMinMax: {x: 0.2, y: 4}
+  phaseMinMax: {x: 0.17, y: 3}
+  jitterMinMax: {x: 0.05, y: 0.35}
+  moveSpeed: 5
+  acceleration: 8
+  canBeKnockedBack: 1
+  knockbackResistance: 0
+  knockbackRecoveryTime: 0.3
+  pathUpdateInterval: 0.6
+  nodeReachDistance: 0.1
+  pathUpdateRandomization: 0.3
+  minNodesRemainingForNewPath: 7
+  enableDynamicThrottling: 1
+  targetMode: 4
+  targetTransform: {fileID: 0}
+  targetPosition: {x: 0, y: 0, z: 0}
+  rightwardDistance: 25
+  targetGameObject: {fileID: 0}
+  targetTag: Player
+  updateTargetDynamically: 1
+  retargetIfLost: 0
+  retargetSearchInterval: 1
+  targetMoveRepathThreshold: 0.25
+  maxRepathIntervalWhileFollowing: 0.75
+  avoidanceRadius: 1
+  avoidanceStrength: 0.5
+  prioritizeAvoidance: 1
+  usePathSmoothing: 0
+  smoothingIterations: 2
+  enableStuckDetection: 1
+  stuckDetectionTime: 2
+  minProgressDistance: 0.5
+  stuckRecoveryRadius: 3
+  maxStuckRecoveryAttempts: 3
+  recoveryDuration: 0.5
+  recoveryForce: 5
+  recoverySpeed: 4
+  recoveryMaxBounces: 3
+  recoveryBlockers:
+    serializedVersion: 2
+    m_Bits: 192
+  maxTotalRecoveryTime: 3
+  staggerPathRequests: 1
+  skipPathIfStationary: 1
+  stationaryThreshold: 0.1
+  noPathWatchdogSeconds: 1.5
+  enableSearchMarking: 1
+  showDebugInfo: 0
+  showDebugLogs: 0
+  currentActualSpeed: 0
+  currentStatus: 
+  enemyID: -1
+  lastKnownTargetPos: {x: 0, y: 0, z: 0}
+  verboseSearchLogs: 0
+  lookAheadDistance: 0.6
+  dynamicNodeRadiusFactor: 0.25
+  sharpTurnSlowAngle: 120
+  sharpTurnSpeedScale: 0.6
+  maxTurnRateDeg: 195
+  maxAccel: 40
+  maxDecel: 60
+  desiredVelSmoothing: 0.1
+  arrivalSlowdownRadius: 1.6
+  navBlockers:
+    serializedVersion: 2
+    m_Bits: 64
+  navClearancePadding: 0.3
+  cornerInset: 0.3
+  losMaxHops: 64
+  clearanceSampleStep: 0.05
+  avoidCongestionInPathing: 1
+  congestionProbeRadius: 1
+  congestionProbeRing: 1.75
+  congestionProbeSamples: 12
+  congestionDistanceWeight: 0.325
+  scanPathForCongestion: 1
+  chokeScanNodes: 6
+  chokeScanRadius: 0.9
+  chokeScanThreshold: 3
+  chokeDetourCooldown: 0.75
+  respectMovementHolds: 1
+  minSpeedForProgress: 0.12
+  minDesiredSpeedForStuck: 0.15
+  nodeProgressEpsilon: 0.06
+  noProgressWindow: 0.65
+  repathPendingGrace: 0.75
+  highQueueGraceThreshold: 40
+  highQueueExtraGrace: 0.5
+  nearWaypointRelax: 2
+  enableCongestionRecovery: 1
+  congestionNeighborRadius: 1.1
+  congestionThreshold: 3
+  congestionDwellTime: 0.35
+  yieldDuration: 0.45
+  yieldCooldown: 1.5
+  yieldSpeedScale: 0.65
+  allyMask:
+    serializedVersion: 2
+    m_Bits: 128
+  searchSkill: 10
+  searchUseSkillMapping: 1
+  searchCoverageTarget: 0.96
+  searchEmptyChecksBeforeLeave: 3
+  searchPickInterval: 1.25
+  searchLookHoldMin: 0.12
+  searchLookHoldMax: 0.35
+  searchLookHoldPerMeter: 0.08
+  searchLocalSampleRMin: 0.9
+  searchLocalSampleRMax: 2.25
+  searchLocalSampleCount: 16
+  searchBatchSize: 30
+  searchStepMaxDist: 4
+  searchMinHopDist: 0.6
+  searchExpandRadius: 6
+  searchLookSweepRadius: 8
+  searchLookHalfAngle: 35
+  searchMarkInterval: 0.5
+  searchMarkSegments: 6
+  searchMaxMarksPerSweep: 96
+  searchRadiusBoost: 1
+  searchAngleBoost: 1
+  searchUseLOS: 1
+  searchOccluderMask:
+    serializedVersion: 2
+    m_Bits: 64
+  searchLOSStartInset: 0.1
+  searchAcrossWallMaxDist: 6
+  searchLosNearBlockDist: 2
+  searchBlockHitNear: 0.8
+  searchAllowPortalTargets: 1
+  autoClearance: 1
+  manualAgentRadius: 0.3
+  clearanceScale: 1
+  phase: 0
+  initialState: 4
+  patrolPoints: []
+  waypointTolerance: 0.25
+  investigateHoldSeconds: 1.5
+  investigatePoint: {x: 0, y: 0, z: 0}
+  enableIdleMicroMovement: 1
+  idleMicroSpeed: 0.35
+  idleMicroDirInterval: {x: 0.9, y: 1.8}
+  idleMicroObstacleProbe: 0.35
+  visionBlockMask:
+    serializedVersion: 2
+    m_Bits: 64
+  visionTargetsMask:
+    serializedVersion: 2
+    m_Bits: 256
+  trapMask:
+    serializedVersion: 2
+    m_Bits: 512
+  verboseDetectionLogs: 0
+  visionRange: 8
+  visionFOVDeg: 110
+  hearingRadius: 4
+  detectionCooldown: 0.2
+  areaChunker: {fileID: 0}
+  showSearchGizmos: 1
+  gizmoPointSizeSearched: 0.12
+  gizmoPointSizeFrontier: 0.08
+  gizmoColorSearched: {r: 1, g: 0.2, b: 0.2, a: 0.35}
+  gizmoColorShared: {r: 0.2, g: 1, b: 1, a: 0.6}
+  gizmoColorFrontier: {r: 1, g: 0.95, b: 0.2, a: 0.3}
+  gizmoColorAnchor: {r: 0.2, g: 1, b: 1, a: 0.6}
+--- !u!114 &-8945442767471094536
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 5337136714696941629}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: de6bfb11121fc394e9c8ff1d503ee35c, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  useCoreMasks: 1
+  obstacleMaskOverride:
+    serializedVersion: 2
+    m_Bits: 0
+  targetsMaskOverride:
+    serializedVersion: 2
+    m_Bits: 0
+  trapMaskOverride:
+    serializedVersion: 2
+    m_Bits: 0
+  maxColliders: 32
