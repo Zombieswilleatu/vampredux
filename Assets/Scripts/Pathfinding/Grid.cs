@@ -1,4 +1,5 @@
 using UnityEngine;
+using System.Collections;
 using System.Collections.Generic;
 
 [ExecuteAlways]
@@ -23,6 +24,16 @@ public class Grid : MonoBehaviour
     [Tooltip("Maximum cached entries before an emergency clear.")]
     public int maxCacheEntries = 1000;
 
+    [Header("Prewarm (runtime only)")]
+    [Tooltip("Kick off a background pass at Start() to fill neighbour masks (and walkability) for these clearances.")]
+    public bool prewarmOnStart = false;
+    [Tooltip("Clearance radii to prewarm. Include 0 for baked-sized walkers.")]
+    public float[] prewarmClearances = new float[] { 0f, 0.5f, 1.0f };
+    [Tooltip("How many cells to process per frame while prewarming.")]
+    public int prewarmCellsPerFrame = 6000;
+    [Tooltip("Log basic progress while prewarming.")]
+    public bool prewarmLog = false;
+
     // --- Internal grid data ---
     private Node[,] grid;
     private float nodeDiameter;
@@ -32,6 +43,10 @@ public class Grid : MonoBehaviour
     private Dictionary<long, CachedWalkability> walkabilityCache;
     private float lastCacheCleanup = 0f;
     private const float CACHE_CLEANUP_INTERVAL = 5f;
+
+    // --- Caching (8-way neighbour mask per cell/clearance bucket) ---
+    // bit order matches loops dx=-1..1, dy=-1..1 skipping center
+    private Dictionary<long, byte> neighbourMaskCache = new Dictionary<long, byte>(4096);
 
     // Optional public readouts
     public int gridSizeXPublic => gridSizeX;
@@ -63,10 +78,19 @@ public class Grid : MonoBehaviour
         CreateGrid();
     }
 
+    void Start()
+    {
+        // Optional background prewarm (runtime only)
+        if (Application.isPlaying && prewarmOnStart && prewarmClearances != null && prewarmClearances.Length > 0)
+        {
+            StartCoroutine(PrewarmNeighbourMasksAsync(prewarmClearances, prewarmCellsPerFrame));
+        }
+    }
+
     void Update()
     {
         // Periodic cache cleanup
-        if (!useWalkabilityCache || walkabilityCache == null) return;
+        if (!useWalkabilityCache) return;
 
         if (Application.isPlaying && Time.time - lastCacheCleanup > CACHE_CLEANUP_INTERVAL)
         {
@@ -77,23 +101,29 @@ public class Grid : MonoBehaviour
 
     private void CleanupCache()
     {
-        if (walkabilityCache == null || walkabilityCache.Count == 0) return;
-
-        float now = Time.time;
-        var toRemove = new List<long>(64);
-
-        foreach (var kvp in walkabilityCache)
+        // walkability cache: expire entries by age
+        if (walkabilityCache != null && walkabilityCache.Count > 0)
         {
-            if (now - kvp.Value.timestamp > cacheLifetime)
-                toRemove.Add(kvp.Key);
+            float now = Time.time;
+            var toRemove = new List<long>(64);
+
+            foreach (var kvp in walkabilityCache)
+            {
+                if (now - kvp.Value.timestamp > cacheLifetime)
+                    toRemove.Add(kvp.Key);
+            }
+
+            for (int i = 0; i < toRemove.Count; i++)
+                walkabilityCache.Remove(toRemove[i]);
+
+            // Emergency clear if ballooned
+            if (walkabilityCache.Count > maxCacheEntries)
+                walkabilityCache.Clear();
         }
 
-        for (int i = 0; i < toRemove.Count; i++)
-            walkabilityCache.Remove(toRemove[i]);
-
-        // Emergency clear if we’ve ballooned
-        if (walkabilityCache.Count > maxCacheEntries)
-            walkabilityCache.Clear();
+        // neighbour mask cache: cheap, clear opportunistically
+        if (neighbourMaskCache != null && neighbourMaskCache.Count > maxCacheEntries * 2)
+            neighbourMaskCache.Clear();
     }
 
     // ---------------------------
@@ -124,6 +154,10 @@ public class Grid : MonoBehaviour
                 grid[x, y] = new Node(walkable, worldPoint, x, y);
             }
         }
+
+        // fresh grid => flush caches so dynamic results recompute
+        walkabilityCache?.Clear();
+        neighbourMaskCache?.Clear();
     }
 
     // ---------------------------
@@ -225,43 +259,23 @@ public class Grid : MonoBehaviour
     public List<Node> GetNeighbours(Node node, float clearanceRadius)
     {
         var neighbours = new List<Node>(8);
+        byte mask = GetNeighbourMask(node, clearanceRadius);
 
+        int bit = 0;
         for (int dx = -1; dx <= 1; dx++)
         {
             for (int dy = -1; dy <= 1; dy++)
             {
-                if (dx == 0 && dy == 0) continue;
+                if (dx == 0 && dy == 0) { bit++; continue; }
 
-                int nx = node.gridX + dx;
-                int ny = node.gridY + dy;
-
-                if (nx < 0 || nx >= gridSizeX || ny < 0 || ny >= gridSizeY) continue;
-
-                Node n = grid[nx, ny];
-
-                if (dx != 0 && dy != 0)
+                if (((mask >> bit) & 1) != 0)
                 {
-                    int sx = node.gridX + dx; // side x (same y)
-                    int sy = node.gridY;
-                    int tx = node.gridX;      // side y (same x)
-                    int ty = node.gridY + dy;
-
-                    if (sx < 0 || sx >= gridSizeX || sy < 0 || sy >= gridSizeY) continue;
-                    if (tx < 0 || tx >= gridSizeX || ty < 0 || ty >= gridSizeY) continue;
-
-                    Node sideA = grid[sx, sy];
-                    Node sideB = grid[tx, ty];
-
-                    if (!IsWalkableCached(sideA, clearanceRadius)) continue;
-                    if (!IsWalkableCached(sideB, clearanceRadius)) continue;
-                    if (!IsWalkableCached(n, clearanceRadius)) continue;
+                    int nx = node.gridX + dx;
+                    int ny = node.gridY + dy;
+                    if ((uint)nx < gridSizeX && (uint)ny < gridSizeY)
+                        neighbours.Add(grid[nx, ny]);
                 }
-                else
-                {
-                    if (!IsWalkableCached(n, clearanceRadius)) continue;
-                }
-
-                neighbours.Add(n);
+                bit++;
             }
         }
 
@@ -276,45 +290,28 @@ public class Grid : MonoBehaviour
     {
         if (buffer == null || buffer.Length == 0) return 0;
 
+        byte mask = GetNeighbourMask(node, clearanceRadius);
+
         int count = 0;
+        int bit = 0;
 
         for (int dx = -1; dx <= 1; dx++)
         {
             for (int dy = -1; dy <= 1; dy++)
             {
-                if (dx == 0 && dy == 0) continue;
+                if (dx == 0 && dy == 0) { bit++; continue; }
 
-                int nx = node.gridX + dx;
-                int ny = node.gridY + dy;
-
-                if (nx < 0 || nx >= gridSizeX || ny < 0 || ny >= gridSizeY) continue;
-
-                Node n = grid[nx, ny];
-
-                if (dx != 0 && dy != 0)
+                if (((mask >> bit) & 1) != 0)
                 {
-                    int sx = node.gridX + dx; // side x (same y)
-                    int sy = node.gridY;
-                    int tx = node.gridX;      // side y (same x)
-                    int ty = node.gridY + dy;
-
-                    if (sx < 0 || sx >= gridSizeX || sy < 0 || sy >= gridSizeY) continue;
-                    if (tx < 0 || tx >= gridSizeX || ty < 0 || ty >= gridSizeY) continue;
-
-                    Node sideA = grid[sx, sy];
-                    Node sideB = grid[tx, ty];
-
-                    if (!IsWalkableCached(sideA, clearanceRadius)) continue;
-                    if (!IsWalkableCached(sideB, clearanceRadius)) continue;
-                    if (!IsWalkableCached(n, clearanceRadius)) continue;
+                    int nx = node.gridX + dx;
+                    int ny = node.gridY + dy;
+                    if ((uint)nx < gridSizeX && (uint)ny < gridSizeY)
+                    {
+                        if (count < buffer.Length) buffer[count++] = grid[nx, ny];
+                        else return count; // buffer full
+                    }
                 }
-                else
-                {
-                    if (!IsWalkableCached(n, clearanceRadius)) continue;
-                }
-
-                if (count < buffer.Length) buffer[count++] = n;
-                else return count; // buffer full
+                bit++;
             }
         }
 
@@ -360,9 +357,9 @@ public class Grid : MonoBehaviour
     // Quantized cache key: pack x,y,r into a 64-bit integer
     private long GetCacheKey(Vector3 position, float clearanceRadius)
     {
-        int qx = Mathf.RoundToInt(position.x * 4f);   // 0.25-unit precision
+        int qx = Mathf.RoundToInt(position.x * 4f);        // 0.25-unit precision
         int qy = Mathf.RoundToInt(position.y * 4f);
-        int qr = Mathf.RoundToInt(clearanceRadius * 10f); // 0.1-unit precision
+        int qr = Mathf.RoundToInt(clearanceRadius * 10f);  // 0.1-unit precision
 
         unchecked
         {
@@ -371,6 +368,174 @@ public class Grid : MonoBehaviour
                      | ((long)(qr & 0xFFFFFF));      // 24 bits
             return key;
         }
+    }
+
+    // ---------------------------
+    // Neighbour mask cache (per cell + clearance bucket)
+    // ---------------------------
+    private int ClearanceBucket(float r) => Mathf.Max(0, Mathf.CeilToInt(r / (nodeRadius + 1e-6f)));
+
+    private long MaskKey(int gx, int gy, int bucket)
+    {
+        unchecked
+        {
+            // 16 bits each (safe for typical grid sizes)
+            return ((long)(gx & 0xFFFF) << 32)
+                 | ((long)(gy & 0xFFFF) << 16)
+                 | (long)(bucket & 0xFFFF);
+        }
+    }
+
+    private byte GetNeighbourMask(Node node, float clearanceRadius)
+    {
+        int bucket = ClearanceBucket(clearanceRadius);
+        long key = MaskKey(node.gridX, node.gridY, bucket);
+
+        if (neighbourMaskCache.TryGetValue(key, out var mask))
+            return mask;
+
+        mask = BuildNeighbourMask(node, clearanceRadius);
+        neighbourMaskCache[key] = mask;
+        return mask;
+    }
+
+    private byte BuildNeighbourMask(Node node, float clearanceRadius)
+    {
+        byte m = 0;
+        int bit = 0;
+
+        for (int dx = -1; dx <= 1; dx++)
+        {
+            for (int dy = -1; dy <= 1; dy++)
+            {
+                if (dx == 0 && dy == 0) { bit++; continue; }
+
+                int nx = node.gridX + dx;
+                int ny = node.gridY + dy;
+
+                if ((uint)nx >= gridSizeX || (uint)ny >= gridSizeY)
+                {
+                    bit++;
+                    continue;
+                }
+
+                Node n = grid[nx, ny];
+
+                if (dx != 0 && dy != 0)
+                {
+                    int sx = node.gridX + dx; // side x (same y)
+                    int sy = node.gridY;
+                    int tx = node.gridX;      // side y (same x)
+                    int ty = node.gridY + dy;
+
+                    if ((uint)sx >= gridSizeX || (uint)sy >= gridSizeY ||
+                        (uint)tx >= gridSizeX || (uint)ty >= gridSizeY)
+                    {
+                        bit++;
+                        continue;
+                    }
+
+                    Node sideA = grid[sx, sy];
+                    Node sideB = grid[tx, ty];
+
+                    if (IsWalkableCached(sideA, clearanceRadius) &&
+                        IsWalkableCached(sideB, clearanceRadius) &&
+                        IsWalkableCached(n, clearanceRadius))
+                    {
+                        m |= (byte)(1 << bit);
+                    }
+                }
+                else
+                {
+                    if (IsWalkableCached(n, clearanceRadius))
+                        m |= (byte)(1 << bit);
+                }
+
+                bit++;
+            }
+        }
+
+        return m;
+    }
+
+    // ---------------------------
+    // Cache management hooks (for Pathfinding.NotifyEnvironmentChange)
+    // ---------------------------
+    public void ClearWalkabilityCache()
+    {
+        walkabilityCache?.Clear();
+        neighbourMaskCache?.Clear();
+    }
+
+    public void ClearCache() => ClearWalkabilityCache();
+
+    /// <summary>
+    /// Region-based invalidation. Current implementation conservatively clears all caches.
+    /// (Cache key packing for walkability is not reversible across negatives.)
+    /// </summary>
+    public void InvalidateCacheRegion(Vector3 position, float radius)
+    {
+        ClearWalkabilityCache();
+    }
+
+    // ---------------------------
+    // Prewarm API
+    // ---------------------------
+
+    /// <summary>
+    /// Background prewarm that fills neighbour masks (and walkability cache as a side-effect)
+    /// for the given radii. Runs over multiple frames to avoid spikes.
+    /// </summary>
+    public IEnumerator PrewarmNeighbourMasksAsync(IList<float> radii, int cellsPerFrame = 6000)
+    {
+        if (grid == null || radii == null || radii.Count == 0) yield break;
+
+        // Build distinct buckets once
+        var buckets = new List<int>();
+        var seen = new HashSet<int>();
+        for (int i = 0; i < radii.Count; i++)
+        {
+            int b = ClearanceBucket(Mathf.Max(0f, radii[i]));
+            if (seen.Add(b)) buckets.Add(b);
+        }
+
+        if (prewarmLog) Debug.Log($"[Grid] Prewarm start: buckets={buckets.Count}, cells={gridSizeX * gridSizeY}");
+
+        int processedThisFrame = 0;
+        int totalProcessed = 0;
+
+        for (int y = 0; y < gridSizeY; y++)
+        {
+            for (int x = 0; x < gridSizeX; x++)
+            {
+                Node n = grid[x, y];
+
+                // Fill per requested bucket
+                for (int bi = 0; bi < buckets.Count; bi++)
+                {
+                    int bucket = buckets[bi];
+                    long key = MaskKey(x, y, bucket);
+                    if (!neighbourMaskCache.ContainsKey(key))
+                    {
+                        float r = bucket * nodeRadius;
+                        byte m = BuildNeighbourMask(n, r);
+                        neighbourMaskCache[key] = m;
+                    }
+                }
+
+                processedThisFrame++;
+                totalProcessed++;
+
+                if (processedThisFrame >= Mathf.Max(64, cellsPerFrame))
+                {
+                    processedThisFrame = 0;
+                    if (prewarmLog) Debug.Log($"[Grid] Prewarm progress: {totalProcessed}/{gridSizeX * gridSizeY}");
+                    yield return null; // spread over frames
+                }
+            }
+        }
+
+        if (prewarmLog) Debug.Log($"[Grid] Prewarm complete: {totalProcessed} cells.");
     }
 
     // ---------------------------

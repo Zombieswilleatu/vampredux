@@ -73,6 +73,31 @@ namespace EnemyAI
         public bool skipPathIfStationary = true;
         public float stationaryThreshold = 0.1f;
 
+        // ------------------ NEW: Prewarm controls ------------------
+        [Header("Pathfinding Prewarm")]
+        [Tooltip("Prewarm the coarse caches around start/target when the AI spawns.")]
+        public bool prewarmOnSpawn = true;
+
+        [Tooltip("Periodically prewarm when our target is far away (before asking for a long path).")]
+        public bool prewarmOnRetarget = true;
+
+        [Tooltip("Minimum distance to target before we attempt a prewarm.")]
+        public float prewarmMinDistance = 10f;
+
+        [Tooltip("Coarse-cell radius for prewarm touches (tiny costs).")]
+        [Range(1, 6)] public int prewarmRadiusCells = 2;
+
+        [Tooltip("Cooldown between opportunistic prewarms (seconds).")]
+        public float prewarmCooldown = 0.5f;
+
+        [Tooltip("Used only if we can't infer a radius from colliders/other partials.")]
+        public float fallbackClearanceRadius = 0.35f;
+
+        private float _nextPrewarmTime = 0f;
+        private Vector3 _lastPrewarmForDest = new Vector3(9999, 9999, 9999);
+        private float _cachedClearance = -1f;
+        // -----------------------------------------------------------
+
         // --------------------------------------------------------------------
         // Search ray budget machinery (kept here). Do NOT re-declare public knobs;
         // they now live in EnemyAICore.SearchTuning.cs (partial).
@@ -252,6 +277,17 @@ namespace EnemyAI
 
             totalEnemiesInitialized++; totalEnemiesActive++;
 
+            // --------- NEW: prewarm on spawn (after refs are valid) ----------
+            if (prewarmOnSpawn)
+            {
+                float clr = GetClearanceRadius();
+                pathfinder.PrewarmCoarse(transform.position, clr, prewarmRadiusCells);
+                pathfinder.PrewarmCoarse(currentTarget, clr, prewarmRadiusCells);
+                _lastPrewarmForDest = currentTarget;
+                _nextPrewarmTime = Time.time + prewarmCooldown;
+            }
+            // -----------------------------------------------------------------
+
             if (!requestLoopRunning)
             {
                 if (staggerPathRequests)
@@ -291,6 +327,11 @@ namespace EnemyAI
             if (isKnockedBack) return;
 
             UpdateTarget();
+
+            // --------- NEW: opportunistic prewarm when chasing far targets ---
+            if (prewarmOnRetarget) TryPrewarmForCurrentTarget();
+            // -----------------------------------------------------------------
+
             if (enableStuckDetection && !isRecovering) CheckIfStuck();
 
             if (!isRecovering)
@@ -323,5 +364,47 @@ namespace EnemyAI
             rb.velocity += actualForce; StartCoroutine(KnockbackRecovery());
         }
         IEnumerator KnockbackRecovery() { isKnockedBack = true; yield return new WaitForSeconds(knockbackRecoveryTime); isKnockedBack = false; }
+
+        // ------------------------- NEW helpers -------------------------
+
+        private float GetClearanceRadius()
+        {
+            if (_cachedClearance > 0f) return _cachedClearance;
+
+            float r = fallbackClearanceRadius;
+
+            if (TryGetComponent<CircleCollider2D>(out var cc))
+                r = Mathf.Max(r, cc.radius * Mathf.Max(transform.lossyScale.x, transform.lossyScale.y));
+            else if (TryGetComponent<CapsuleCollider2D>(out var cap))
+                r = Mathf.Max(r, Mathf.Max(cap.size.x, cap.size.y) * 0.5f * Mathf.Max(transform.lossyScale.x, transform.lossyScale.y));
+            else if (TryGetComponent<BoxCollider2D>(out var bc))
+                r = Mathf.Max(r, Mathf.Max(bc.size.x, bc.size.y) * 0.5f * Mathf.Max(transform.lossyScale.x, transform.lossyScale.y));
+
+            // If other partials expose a radius, they can set _cachedClearance directly.
+            _cachedClearance = r;
+            return r;
+        }
+
+        private void TryPrewarmForCurrentTarget()
+        {
+            if (pathfinder == null) return;
+
+            float now = Time.time;
+            if (now < _nextPrewarmTime) return;
+
+            Vector3 dest = currentTarget;
+            float dist = Vector3.Distance(transform.position, dest);
+            if (dist < prewarmMinDistance) return;
+
+            // avoid spamming same dest
+            if (Vector3.SqrMagnitude(dest - _lastPrewarmForDest) < 1.0f) return;
+
+            float clr = GetClearanceRadius();
+            pathfinder.PrewarmCoarse(transform.position, clr, prewarmRadiusCells);
+            pathfinder.PrewarmCoarse(dest, clr, prewarmRadiusCells);
+
+            _lastPrewarmForDest = dest;
+            _nextPrewarmTime = now + prewarmCooldown;
+        }
     }
 }

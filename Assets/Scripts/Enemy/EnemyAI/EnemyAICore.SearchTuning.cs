@@ -90,7 +90,20 @@ namespace EnemyAI
         // ===================== Coverage & LOS =====================
         [Header("Area Coverage Targets")]
         [Range(0.0f, 1.0f)] public float searchCoverageTarget = 0.96f;
+
+        [Tooltip("Slack above target that counts as 'done' and allows leaving immediately.")]
+        [Range(0f, 0.2f)] public float searchCoverageDoneSlack = 0.03f;
+
         [Min(0)] public int searchEmptyChecksBeforeLeave = 3;
+
+        [Tooltip("How many same-side 'local pokes' allowed before leaving.")]
+        [Min(0)] public int searchMaxLocalPokesBeforeLeave = 2;
+
+        [Tooltip("Counts as no progress if coverage improves less than this per pick.")]
+        [Range(0f, 0.1f)] public float searchCoverageStagnationEpsilon = 0.02f;
+
+        [Tooltip("Consecutive stagnant picks before leaving.")]
+        [Min(0)] public int searchStagnantPicksBeforeLeave = 2;
 
         [Header("LOS Heuristics (SearchState)")]
         [Min(0f)] public float searchAcrossWallMaxDist = 6.0f;
@@ -113,17 +126,19 @@ namespace EnemyAI
         public bool searchAllowPortalTargets = true;
 
         // ===================== Skill → Tuning mapping =====================
-        /// <summary>Recompute tunables from the 1–10 skill knob.</summary>
         public void ApplySearchTuningFromSkill()
         {
             if (!searchUseSkillMapping) return;
 
-            // t: 0 at skill=1, 1 at skill=10
             float t = Mathf.Clamp01((searchSkill - 1) / 9f);
 
             // --- Coverage & persistence ---
             searchCoverageTarget = Mathf.Lerp(0.82f, 0.99f, t);
+            searchCoverageDoneSlack = Mathf.Lerp(0.06f, 0.02f, t);
             searchEmptyChecksBeforeLeave = Mathf.RoundToInt(Mathf.Lerp(1f, 5f, t));
+            searchMaxLocalPokesBeforeLeave = Mathf.RoundToInt(Mathf.Lerp(1f, 3f, t));
+            searchCoverageStagnationEpsilon = Mathf.Lerp(0.03f, 0.01f, t);
+            searchStagnantPicksBeforeLeave = Mathf.RoundToInt(Mathf.Lerp(1f, 3f, t));
 
             // --- Rhythm / dwell ---
             searchPickInterval = Mathf.Lerp(1.60f, 0.70f, t);
@@ -184,6 +199,12 @@ namespace EnemyAI
             searchExpandRadius     = Mathf.Max(0.1f,searchExpandRadius);
 
             searchLOSStartInset    = Mathf.Max(0f,  searchLOSStartInset);
+
+            searchCoverageDoneSlack         = Mathf.Clamp(searchCoverageDoneSlack, 0f, 0.2f);
+            searchEmptyChecksBeforeLeave    = Mathf.Max(0, searchEmptyChecksBeforeLeave);
+            searchMaxLocalPokesBeforeLeave  = Mathf.Max(0, searchMaxLocalPokesBeforeLeave);
+            searchCoverageStagnationEpsilon = Mathf.Clamp(searchCoverageStagnationEpsilon, 0f, 0.1f);
+            searchStagnantPicksBeforeLeave  = Mathf.Max(0, searchStagnantPicksBeforeLeave);
         }
 #endif
     }
