@@ -350,7 +350,9 @@ namespace EnemyAI
             if (isKnockedBack) return;
             if (isRecovering) { RecoveryStep(); return; }
 
-            currentVelocity = Vector2.Lerp(currentVelocity, desiredVelocity, Time.fixedDeltaTime * acceleration);
+            // desiredVelocity already includes turn/accel caps from ApplyHumanConstraints(), so copy it
+            // directly instead of layering an extra smoothing pass that can slow path following.
+            currentVelocity = desiredVelocity;
             rb.velocity = currentVelocity;
             if (rb.velocity.magnitude > moveSpeed * 1.5f)
                 rb.velocity = rb.velocity.normalized * (moveSpeed * 1.5f);
