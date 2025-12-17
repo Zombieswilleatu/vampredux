@@ -350,7 +350,17 @@ namespace EnemyAI
             if (isKnockedBack) return;
             if (isRecovering) { RecoveryStep(); return; }
 
-            currentVelocity = Vector2.Lerp(currentVelocity, desiredVelocity, Time.fixedDeltaTime * acceleration);
+            // desiredVelocity already includes turn/accel caps from ApplyHumanConstraints(). Drive the
+            // rigidbody directly to ensure we actually move along the planned vector even when drag is
+            // high (otherwise we could appear to "lean" in one direction slowly without following the
+            // computed path).
+            currentVelocity = desiredVelocity;
+
+            // MovePosition keeps physics interpolation intact and avoids accumulating error from drag.
+            Vector2 delta = currentVelocity * Time.fixedDeltaTime;
+            rb.MovePosition(rb.position + delta);
+
+            // Keep velocity in sync for systems that read it (anims, knockback blends, etc.).
             rb.velocity = currentVelocity;
             if (rb.velocity.magnitude > moveSpeed * 1.5f)
                 rb.velocity = rb.velocity.normalized * (moveSpeed * 1.5f);

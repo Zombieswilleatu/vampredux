@@ -54,44 +54,6 @@ namespace EnemyAI
             return true;
         }
 
-        // --- radius cache ---
-        void CacheAgentRadius()
-        {
-            if (agentRadius > 0f) return;
-
-            var cc = GetComponent<CircleCollider2D>();
-            if (cc != null)
-            {
-                float scale = Mathf.Max(Mathf.Abs(transform.localScale.x), Mathf.Abs(transform.localScale.y));
-                agentRadius = Mathf.Abs(cc.radius) * scale;
-                return;
-            }
-
-            var cap = GetComponent<CapsuleCollider2D>();
-            if (cap != null)
-            {
-                Vector2 size = cap.size;
-                float scaleX = Mathf.Abs(transform.localScale.x);
-                float scaleY = Mathf.Abs(transform.localScale.y);
-                float maxAxis = Mathf.Max(size.x * scaleX, size.y * scaleY);
-                agentRadius = maxAxis * 0.5f;
-                return;
-            }
-
-            var bc = GetComponent<BoxCollider2D>();
-            if (bc != null)
-            {
-                Vector2 size = bc.size;
-                float scaleX = Mathf.Abs(transform.localScale.x);
-                float scaleY = Mathf.Abs(transform.localScale.y);
-                float maxAxis = Mathf.Max(size.x * scaleX, size.y * scaleY);
-                agentRadius = maxAxis * 0.5f;
-                return;
-            }
-
-            agentRadius = 0.3f; // fallback
-        }
-
         // ---------- PATH REQUESTING ----------
         IEnumerator RequestPathRepeatedly(float initialDelay)
         {
