@@ -91,6 +91,11 @@ namespace EnemyAI
         /// </summary>
         public bool TryGetUnsearchedPointInAreaLocal(int areaId, Vector3 startWorld, out Vector3 pick)
         {
+            // If SearchMemory exists, let it handle "unsearched" semantics against its own grid.
+            InitSearchMemoryIfNeeded();
+            if (_searchMemory != null)
+                return _searchMemory.TryGetUnsearchedPointInAreaLocal(areaId, startWorld, out pick);
+
             pick = startWorld;
             if (grid == null || areaId < 0) return false;
 
@@ -100,8 +105,10 @@ namespace EnemyAI
 
             EnsureBfsBuffers();
 
-            Node start = grid.NodeFromWorldPoint(startWorld, 0f);
+            // UPDATED: new API (no clearance arg) + optional cached-walkable probe with 0f clearance
+            Node start = grid.NodeFromWorldPoint(startWorld);
             if (start == null) return false;
+            if (!grid.IsWalkableCached(start, 0f)) return false;
 
             // bump the visit stamp (wrap safely)
             _visitStampCur = (_visitStampCur == int.MaxValue) ? 1 : _visitStampCur + 1;
@@ -124,8 +131,10 @@ namespace EnemyAI
                 QDeq(out int x, out int y);
                 expands++;
 
-                Node cur = grid.GetNodeByGridCoords(x, y, 0f);
+                // UPDATED: new API + optional cached-walkable probe with 0f clearance
+                Node cur = grid.GetNodeByGridCoords(x, y);
                 if (cur == null) continue;
+                if (!grid.IsWalkableCached(cur, 0f)) continue;
 
                 Vector2 pw = cur.worldPosition;
 
