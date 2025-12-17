@@ -1,12 +1,16 @@
-﻿// -----------------------------
+﻿// ═════════════════════════════════════════════════════════════════════════════
+// FIXED: AreaChunker2D.cs - Added public accessors for origin and cell size
+// ═════════════════════════════════════════════════════════════════════════════
+// -----------------------------
 // File: EnemyAI/Perception/AreaChunker2D.cs
 // Purpose: Partition walkable space into areas, detect portals (narrow runs),
 //          build an area adjacency graph + portal anchors, and expose helpers
 //          for fast "next-hop" toward a target area.
-// Notes:
-//  - No recursive EnsureBuilt() calls during Build() (avoids stack overflow)
-//  - Adjacency + anchors are derived directly from build arrays
-//  - Includes sampled point copying & fast local-BFS for "unsearched" requests
+// MAJOR FIX: Coverage tracking completely removed from AreaChunker2D
+//            - AreaChunker is now TOPOLOGY ONLY (areas, portals, adjacency)
+//            - Coverage is handled entirely by SearchMemory
+//            - No more dual tracking, no more coverage bugs
+// NEW: Exposed GridOrigin and CellSizePublic for SearchMemory coordinate sync
 // -----------------------------
 using System.Collections.Generic;
 using UnityEngine;
@@ -23,7 +27,7 @@ namespace EnemyAI
         [Tooltip("Auto-build a BoxCollider2D if boundsSource is not set.")]
         public bool autoCreateBounds = true;
         [Tooltip("Layers scanned when auto-creating bounds (tilemaps, floor, walls, props, etc.).")]
-        public LayerMask boundsFromLayers = ~0; // everything by default
+        public LayerMask boundsFromLayers = ~0;
 
         [Header("Grid & Obstacles")]
         [Min(0.1f)] public float cellSize = 0.5f;
@@ -36,10 +40,6 @@ namespace EnemyAI
         [Tooltip("Min corridor length (cells) required before a narrow run counts as a portal.")]
         [Min(1)] public int portalMinRunCells = 2;
 
-        [Header("Marking / Coverage (optional)")]
-        [Tooltip("When true, cone marking performs a Linecast to each cell and skips cells occluded by obstacles.")]
-        public bool respectLOSInMark = true;
-
         [Header("Debug & Logging")]
         public bool verbose = true;
         [Tooltip("Draw gizmos even when the GameObject is not selected.")]
@@ -49,26 +49,23 @@ namespace EnemyAI
         public Color areaA = new Color(0.2f, 0.8f, 1f, 0.15f);
         public Color areaB = new Color(1f, 0.8f, 0.2f, 0.15f);
         public Color portalColor = new Color(1f, 0f, 0f, 0.50f);
-        public Color unsearchedColor = new Color(1f, 0f, 0f, 0.35f);
 
         // --- Grid ---
         private Vector2 _origin;
-        private Vector2Int _size; // cells
+        private Vector2Int _size;
         private float _cs;
 
-        private bool[] _walk;     // walkable cell
-        private bool[] _portal;   // portal (narrow) cell
-        private int[] _areaId;    // -1 unassigned/wall/portal
-        private bool[] _searched; // optional global coverage
+        private bool[] _walk;
+        private bool[] _portal;
+        private int[] _areaId;
 
-        private struct AreaInfo { public int total; public int searched; public List<int> cells; }
+        private struct AreaInfo { public int total; public List<int> cells; }
         private readonly List<AreaInfo> _areas = new List<AreaInfo>(64);
 
-        // Adjacency graph: per-area neighbor list
-        private List<int>[] _areaAdj; // length = AreaCount
+        // Adjacency graph
+        private List<int>[] _areaAdj;
 
-        // For each unordered pair (a,b) store approach anchors near their shared portal(s)
-        // Key = PairKey(min(a,b), max(a,b))
+        // Portal anchors
         private readonly Dictionary<long, List<Vector2>> _portalAnchorsByPair = new Dictionary<long, List<Vector2>>(128);
 
         private bool _built;
@@ -76,10 +73,10 @@ namespace EnemyAI
         // Scratch for builds
         private readonly Queue<int> _floodQ = new Queue<int>(1024);
 
-        // Scratch for runtime BFS (no allocs)
+        // Scratch for runtime BFS
         private readonly Queue<int> _bfsQ = new Queue<int>(1024);
-        private int[] _visitStamp;     // same length as grid, lazily created
-        private int _visitTick;        // increments per query to avoid clearing
+        private int[] _visitStamp;
+        private int _visitTick;
 
         // --- Public readouts ---
         public bool IsBuilt => _built;
@@ -88,6 +85,10 @@ namespace EnemyAI
         public int AreaCount => _areas.Count;
         public int WalkableCount { get; private set; }
         public int PortalCount { get; private set; }
+
+        // NEW: Public accessors for coordinate system sync
+        public Vector2 GridOrigin => _origin;
+        public float CellSizePublic => _cs;
 
         // ---------- Unity lifecycle ----------
 
@@ -99,9 +100,16 @@ namespace EnemyAI
 
         private void OnValidate()
         {
+            // CRITICAL: FIRST LINE - block ALL validation during play mode
+            if (Application.isPlaying)
+            {
+                Debug.LogWarning($"<color=yellow>[AreaChunker2D]</color> OnValidate blocked during play mode", this);
+                return; // EXIT IMMEDIATELY
+            }
+
+            // Editor-only validation
             cellSize = Mathf.Max(0.1f, cellSize);
             portalMinRunCells = Mathf.Max(1, portalMinRunCells);
-            if (Application.isPlaying) return;
 
             if (drawDebug || drawDebugAlways)
                 SafeEnsureBuilt();
@@ -109,7 +117,6 @@ namespace EnemyAI
 
         // ---------- Public API ----------
 
-        /// <summary>Ensure the grid/areas are built (safe to call often).</summary>
         public void EnsureBuilt()
         {
             if (_built) return;
@@ -119,15 +126,13 @@ namespace EnemyAI
         public void SafeEnsureBuilt()
         {
             try { EnsureBuilt(); }
-            catch (System.SystemException ex)
+            catch (System.Exception ex)
             {
                 Debug.LogError($"[{name}] AreaChunker2D build error: {ex.Message}\n{ex.StackTrace}", this);
             }
         }
 
-        /// <summary>
-        /// Area id for position. If on a portal, returns the first neighboring area (or -1).
-        /// </summary>
+        /// <summary>Area id for position. If on a portal, returns the first neighboring area (or -1).</summary>
         public int GetAreaId(Vector2 worldPos)
         {
             EnsureBuilt();
@@ -148,9 +153,7 @@ namespace EnemyAI
 
         public int GetAreaId(Vector3 worldPos) => GetAreaId((Vector2)worldPos);
 
-        /// <summary>
-        /// Strict area id for position. Returns -1 for walls, out of bounds, and portals.
-        /// </summary>
+        /// <summary>Strict area id for position. Returns -1 for walls, out of bounds, and portals.</summary>
         public int GetAreaIdStrict(Vector2 worldPos)
         {
             EnsureBuilt();
@@ -170,15 +173,6 @@ namespace EnemyAI
         }
         public bool IsPortal(Vector3 worldPos) => IsPortal((Vector2)worldPos);
 
-        /// <summary>Coverage [0..1] for area; 1 if invalid.</summary>
-        public float GetAreaCoverage(int areaId)
-        {
-            EnsureBuilt();
-            if (areaId < 0 || areaId >= _areas.Count) return 1f;
-            var a = _areas[areaId];
-            return a.total > 0 ? Mathf.Clamp01((float)a.searched / a.total) : 1f;
-        }
-
         /// <summary>Total walkable cells in an area (0 if invalid).</summary>
         public int GetAreaWalkableCount(int areaId)
         {
@@ -187,9 +181,7 @@ namespace EnemyAI
             return _areas[areaId].total;
         }
 
-        // ───────────────────────────────────────────────────────────────
-        // RUNTIME-FRIENDLY: sampled point copy
-        // ───────────────────────────────────────────────────────────────
+        /// <summary>Copy sampled world points from an area (runtime-friendly).</summary>
         public void CopyAreaWorldPointsSampled(int areaId, List<Vector2> target, int sampleBudget, int seed = -1)
         {
             EnsureBuilt();
@@ -234,23 +226,22 @@ namespace EnemyAI
             }
         }
 
-        // ───────────────────────────────────────────────────────────────
-        // FAST: nearest unsearched within area via non-alloc BFS
-        // ───────────────────────────────────────────────────────────────
-        public bool TryGetUnsearchedPointInArea(int areaId, Vector2 from, out Vector3 point, int maxExpansions = 2048)
+        /// <summary>Find nearest unsearched point in area using external searched array.</summary>
+        public bool TryGetUnsearchedPointInArea(int areaId, Vector2 from, bool[] searchedArray, out Vector3 point, int maxExpansions = 2048)
         {
             EnsureBuilt();
             point = default;
 
             if (areaId < 0 || areaId >= _areas.Count) return false;
+            if (searchedArray == null) return false;
 
-            // Lazy init visit stamps
             int n = _size.x * _size.y;
+            if (searchedArray.Length != n) return false;
+
             _visitStamp ??= new int[n];
             if (_visitStamp.Length != n) _visitStamp = new int[n];
             unchecked { _visitTick++; if (_visitTick == 0) { System.Array.Clear(_visitStamp, 0, _visitStamp.Length); _visitTick = 1; } }
 
-            // Start cell (clamped to grid)
             if (!WorldToIndex(from, out int startIdx))
             {
                 WorldToCellClamped(from, out var c);
@@ -265,10 +256,9 @@ namespace EnemyAI
                 int i = _bfsQ.Dequeue();
                 if (!_walk[i]) continue;
 
-                // Only count non-portal cells *inside* the requested area.
                 if (!_portal[i] && _areaId[i] == areaId)
                 {
-                    if (!_searched[i])
+                    if (!searchedArray[i])
                     {
                         Vector2 w = CellCenterWorld(i);
                         point = new Vector3(w.x, w.y, 0f);
@@ -289,7 +279,7 @@ namespace EnemyAI
             {
                 if (cx < 0 || cy < 0 || cx >= _size.x || cy >= _size.y) return;
                 int ni = CellToIndex(new Vector2Int(cx, cy));
-                if (_visitStamp[ni] == _visitTick) return; // already visited
+                if (_visitStamp[ni] == _visitTick) return;
                 if (!_walk[ni]) return;
                 EnqueueVisit(ni);
             }
@@ -301,65 +291,8 @@ namespace EnemyAI
             }
         }
 
-        /// <summary>
-        /// Mark a cone as searched on the grid (optional; useful for global coverage tools).
-        /// Increments per-area searched counts.
-        /// </summary>
-        public void MarkCone(Vector2 origin, Vector2 dir, float radius, float halfAngleDeg, int losMask = ~0)
-        {
-            EnsureBuilt();
-            if (radius <= 0.01f) return;
-            dir = dir.sqrMagnitude < 1e-6f ? Vector2.right : dir.normalized;
-
-            float r2 = radius * radius;
-            float half = Mathf.Clamp(halfAngleDeg, 0f, 180f);
-            float cosThresh = Mathf.Cos(half * Mathf.Deg2Rad);
-
-            Vector2 min = origin - new Vector2(radius, radius);
-            Vector2 max = origin + new Vector2(radius, radius);
-            WorldToCellClamped(min, out var cmin);
-            WorldToCellClamped(max, out var cmax);
-
-            for (int cy = cmin.y; cy <= cmax.y; cy++)
-                for (int cx = cmin.x; cx <= cmax.x; cx++)
-                {
-                    int idx = CellToIndex(new Vector2Int(cx, cy));
-                    if (!_walk[idx]) continue;
-                    Vector2 w = CellCenterWorld(idx);
-                    Vector2 v = w - origin;
-
-                    if (v.sqrMagnitude > r2) continue;
-                    if (half < 179.9f)
-                    {
-                        float cos = Vector2.Dot(dir, v.normalized);
-                        if (cos < cosThresh) continue;
-                    }
-
-                    if (respectLOSInMark)
-                    {
-                        var mask = (losMask == ~0) ? obstacleMask : (LayerMask)losMask;
-                        if (Physics2D.Linecast(origin, w, mask).collider != null) continue;
-                    }
-
-                    if (!_searched[idx])
-                    {
-                        _searched[idx] = true;
-                        int id = _areaId[idx];
-                        if (id >= 0 && id < _areas.Count)
-                        {
-                            var a = _areas[id];
-                            a.searched++;
-                            _areas[id] = a;
-                        }
-                    }
-                }
-        }
-
         // ---------- Public: portal helpers ----------
 
-        /// <summary>
-        /// If areas are directly adjacent, returns the nearest approach anchor on their shared portal(s).
-        /// </summary>
         public bool TryGetPortalStep(int fromAreaId, int toAreaId, Vector2 origin, out Vector3 step)
         {
             EnsureBuilt();
@@ -369,7 +302,6 @@ namespace EnemyAI
 
             if (_areaAdj == null || _areaAdj.Length != _areas.Count) return false;
 
-            // quick adjacency test
             var nbrs = _areaAdj[fromAreaId];
             bool adjacent = false;
             if (nbrs != null)
@@ -394,10 +326,6 @@ namespace EnemyAI
             return true;
         }
 
-        /// <summary>
-        /// Chooses the first edge on a shortest-path across the area graph from fromAreaId to targetAreaId,
-        /// and returns the nearest anchor on that edge to 'origin'. Falls back to false if areas are disconnected.
-        /// </summary>
         public bool TryGetNextPortalToward(int fromAreaId, int targetAreaId, Vector2 origin, out Vector3 step)
         {
             EnsureBuilt();
@@ -407,7 +335,6 @@ namespace EnemyAI
             int areaCount = _areas.Count;
             if (fromAreaId >= areaCount || targetAreaId >= areaCount) return false;
 
-            // BFS on area graph
             var prev = new int[areaCount];
             var visited = new bool[areaCount];
             for (int i = 0; i < areaCount; i++) prev[i] = -1;
@@ -431,9 +358,8 @@ namespace EnemyAI
                 }
             }
 
-            if (!visited[targetAreaId]) return false; // not connected
+            if (!visited[targetAreaId]) return false;
 
-            // Walk back to find the first hop after fromAreaId
             int cur = targetAreaId;
             int firstHop = targetAreaId;
             while (prev[cur] != -1 && prev[cur] != fromAreaId)
@@ -481,6 +407,7 @@ namespace EnemyAI
                 $"[{name}] AreaChunker2D SUMMARY\n" +
                 $"- Bounds center={b.center:F2} size={b.size:F2}\n" +
                 $"- Grid: {_size.x} x {_size.y} (cellSize={_cs})\n" +
+                $"- Origin={_origin:F2}\n" +
                 $"- Walkable={WalkableCount}  Portals={PortalCount}  Areas={_areas.Count}",
                 this
             );
@@ -488,6 +415,12 @@ namespace EnemyAI
 
         private void Build()
         {
+            if (Application.isPlaying && _built)
+            {
+                Debug.LogWarning($"<color=yellow>[AreaChunker2D]</color> Build blocked during play mode (already built)", this);
+                return;
+            }
+
             if (boundsSource == null && autoCreateBounds)
                 boundsSource = CreateBoundsFromScene();
 
@@ -511,31 +444,26 @@ namespace EnemyAI
             _walk = new bool[n];
             _portal = new bool[n];
             _areaId = new int[n];
-            _searched = new bool[n];
-            _visitStamp = new int[n]; // scratch for BFS
+            _visitStamp = new int[n];
 
             WalkableCount = 0;
             PortalCount = 0;
 
-            // Sample walkability at cell centers
             for (int i = 0; i < n; i++)
             {
                 Vector2 w = CellCenterWorld(i);
                 bool free = !Physics2D.OverlapPoint(w, obstacleMask);
                 _walk[i] = free;
                 _areaId[i] = -1;
-                _searched[i] = false;
                 if (free) WalkableCount++;
             }
 
-            // Detect portals by local min width
             float maxW = Mathf.Max(_cs, portalMaxWidth);
             int widthCells = Mathf.CeilToInt(maxW / _cs);
 
             var hRun = new int[n];
             var vRun = new int[n];
 
-            // Horizontal spans
             for (int y = 0; y < _size.y; y++)
             {
                 int run = 0;
@@ -554,7 +482,6 @@ namespace EnemyAI
                 }
             }
 
-            // Vertical spans
             for (int x = 0; x < _size.x; x++)
             {
                 int run = 0;
@@ -592,7 +519,6 @@ namespace EnemyAI
                 }
             }
 
-            // Flood areas without crossing portals
             _areas.Clear();
             int nextArea = 0;
             for (int i = 0; i < n; i++)
@@ -601,7 +527,6 @@ namespace EnemyAI
                 FloodArea(i, nextArea++);
             }
 
-            // Build adjacency + portal anchors from raw arrays (no EnsureBuilt calls here)
             BuildAdjacencyAndAnchors();
 
             _built = true;
@@ -611,6 +536,7 @@ namespace EnemyAI
                 Debug.Log(
                     $"[{name}] AreaChunker2D built.\n" +
                     $"- Bounds: center={b.center:F2}, size={b.size:F2}\n" +
+                    $"- Origin: {_origin:F2}\n" +
                     $"- Grid: {_size.x}x{_size.y}  cell={_cs}\n" +
                     $"- Walkable={WalkableCount}  Portals={PortalCount}  Areas={_areas.Count}",
                     this
@@ -620,7 +546,7 @@ namespace EnemyAI
 
         private void FloodArea(int seed, int id)
         {
-            var info = new AreaInfo { total = 0, searched = 0, cells = new List<int>(256) };
+            var info = new AreaInfo { total = 0, cells = new List<int>(256) };
             _floodQ.Clear();
             _floodQ.Enqueue(seed);
             _areaId[seed] = id;
@@ -657,7 +583,6 @@ namespace EnemyAI
             for (int i = 0; i < areaCount; i++) _areaAdj[i] = new List<int>(4);
             _portalAnchorsByPair.Clear();
 
-            // Scan every portal cell; look at its 4-neighborhood to find adjacent areas.
             for (int y = 0; y < _size.y; y++)
             {
                 for (int x = 0; x < _size.x; x++)
@@ -671,8 +596,6 @@ namespace EnemyAI
                     int aRt = NeighborArea(x + 1, y);
                     int aLt = NeighborArea(x - 1, y);
 
-                    // Collect distinct neighbor areas & their nearest cell centers
-                    // We'll store up to 4 distinct (junctions are possible).
                     int[] areas = new int[4];
                     Vector2[] anchors = new Vector2[4];
 
@@ -691,9 +614,8 @@ namespace EnemyAI
                     AddArea(aRt, x + 1, y);
                     AddArea(aLt, x - 1, y);
 
-                    if (neighAreasCount < 2) continue; // portal cell that doesn't actually connect two areas (edge case)
+                    if (neighAreasCount < 2) continue;
 
-                    // For each unordered pair, add adjacency and two anchors (one from each side).
                     for (int p = 0; p < neighAreasCount; p++)
                         for (int q = p + 1; q < neighAreasCount; q++)
                         {
@@ -701,7 +623,6 @@ namespace EnemyAI
                             int b = areas[q];
                             if (a == b || a < 0 || b < 0) continue;
 
-                            // add neighbors both ways if not already present
                             if (!Contains(_areaAdj[a], b)) _areaAdj[a].Add(b);
                             if (!Contains(_areaAdj[b], a)) _areaAdj[b].Add(a);
 
@@ -712,7 +633,6 @@ namespace EnemyAI
                                 _portalAnchorsByPair[key] = list;
                             }
 
-                            // Anchor on each side (approach positions)
                             list.Add(anchors[p]);
                             list.Add(anchors[q]);
                         }
@@ -726,14 +646,11 @@ namespace EnemyAI
             }
         }
 
-        // ---------- Auto-bounds ----------
-
         private BoxCollider2D CreateBoundsFromScene()
         {
             bool found = false;
             Bounds b = new Bounds(Vector3.zero, Vector3.zero);
 
-            // Colliders
             var cols = FindObjectsOfType<Collider2D>();
             foreach (var c in cols)
             {
@@ -742,7 +659,6 @@ namespace EnemyAI
                 else b.Encapsulate(c.bounds);
             }
 
-            // Renderers (floor sprites/tilemaps)
             var rends = FindObjectsOfType<Renderer>();
             foreach (var r in rends)
             {
@@ -871,7 +787,7 @@ namespace EnemyAI
                 Color baseCol = ((area & 1) == 0) ? areaA : areaB;
                 baseCol.a = debugAlpha;
 
-                Gizmos.color = (_searched != null && _searched[i]) ? baseCol : unsearchedColor;
+                Gizmos.color = baseCol;
                 Gizmos.DrawCube(new Vector3(w.x, w.y, 0f), size);
             }
         }

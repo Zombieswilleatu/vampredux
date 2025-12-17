@@ -1,7 +1,6 @@
 ﻿// -----------------------------
 // File: EnemyAICore.SearchTuning.cs
-// Purpose: ONE place for all search knobs (UI + skill mapping) used by
-//          SearchState + SearchMemory. Also hosts the single OnValidate().
+// Purpose: ONE place for all search knobs used by SearchState + SearchMemory.
 // -----------------------------
 using UnityEngine;
 
@@ -23,32 +22,37 @@ namespace EnemyAI
 
         [Min(0.05f)]
         [Tooltip("Interval (seconds) between continuous MarkSearchedCone ticks while moving.")]
-        public float searchMarkInterval = 0.50f;
+        public float searchMarkInterval = 0.35f; // tuned default (trail frequency)
 
         [Min(1)]
-        [Tooltip("Split the search cone into this many wedges; one wedge is marked per tick.")]
+        [Tooltip("Split the search cone into this many wedges; one wedge is marked per tick (legacy).")]
         public int searchMarkSegments = 6;
 
         [Header("Sweep Shape")]
         [Tooltip("Base radius (meters) of a single sweep (before radius boost).")]
-        public float searchLookSweepRadius = 0.6f;
+        public float searchLookSweepRadius = 0.9f; // tuned default (0.6–1.2 sweet spot)
 
         [Range(1f, 180f)]
         [Tooltip("Half-angle (degrees) of the sweep (before angle boost).")]
-        public float searchLookHalfAngle = 25f;
+        public float searchLookHalfAngle = 30f; // tuned default (20–35)
 
         [Min(1)]
-        [Tooltip("Hard cap for how many grid cells a single sweep may mark.")]
-        public int searchMaxMarksPerSweep = 160; // used by SearchMemory sweeps
+        [Tooltip("Hard cap for how many grid cells a single sweep may mark (used by both dense + trail variants).")]
+        public int searchMaxMarksPerSweep = 80; // tuned default (60–90)
 
         [Header("Ray Budget (for occlusion-aware sweeping)")]
         [Min(1)]
         [Tooltip("Rays cast per sweep when using the budgeted raycasting variant.")]
-        public int searchRaysPerSweep = 7;
+        public int searchRaysPerSweep = 5; // tuned default (3–5)
 
         [Min(100)]
-        [Tooltip("Global cap across ALL enemies per frame (used by TryConsumeBudget).")]
+        [Tooltip("Global cap across ALL enemies per frame (used by TryConsumeBudget fallback or a manager).")]
         public int searchGlobalRayBudgetPerFrame = 1500;
+
+        // --- New: Governor for trail work distribution ---
+        [Header("Marking Governor")]
+        [Min(1)] public int searchMarkStrideFrames = 2;   // mark every Nth frame per agent
+        [Min(0f)] public float searchTrailMinMove = 0.08f; // require a bit of movement to mark
 
         // ===================== Frontier / Local Plan =====================
         [Header("Search Frontier (local plan)")]
@@ -84,8 +88,8 @@ namespace EnemyAI
 
         // ===================== Cone Multipliers =====================
         [Header("Cone Boosts")]
-        [Min(1f)] public float searchRadiusBoost = 1.15f;
-        [Min(1f)] public float searchAngleBoost = 1.20f;
+        [Min(1f)] public float searchRadiusBoost = 1.10f; // tuned default (1.05–1.15)
+        [Min(1f)] public float searchAngleBoost = 1.15f;  // tuned default (1.05–1.20)
 
         // ===================== Coverage & LOS =====================
         [Header("Area Coverage Targets")]
@@ -111,7 +115,7 @@ namespace EnemyAI
         [Range(0f, 1f)] public float searchBlockHitNear = 0.80f;
 
         [Header("Sweep LOS (SearchMemory cone)")]
-        [Tooltip("If true, sweep marks will linecast to each candidate to respect occluders.")]
+        [Tooltip("If true, dense sweep marks linecast to each candidate to respect occluders.")]
         public bool searchUseLOS = true;
 
         [Tooltip("LayerMask for occluders used by sweep LOS checks.")]
@@ -162,7 +166,7 @@ namespace EnemyAI
             searchLosNearBlockDist = Mathf.Lerp(1.6f, 2.5f, t);
             searchBlockHitNear = Mathf.Lerp(0.65f, 0.90f, t);
 
-            // --- Cone base shape (stronger at high skill) ---
+            // --- Cone base shape ---
             searchLookSweepRadius = Mathf.Lerp(0.6f, 3.5f, t);
             searchLookHalfAngle = Mathf.Lerp(25f, 80f, t);
 
@@ -174,6 +178,9 @@ namespace EnemyAI
             searchMaxMarksPerSweep = Mathf.RoundToInt(Mathf.Lerp(140f, 600f, t));
             searchRaysPerSweep = Mathf.RoundToInt(Mathf.Lerp(5f, 18f, t));
             searchGlobalRayBudgetPerFrame = Mathf.RoundToInt(Mathf.Lerp(1200f, 6000f, t));
+
+            // (Intentionally not mapping searchMarkStrideFrames / searchTrailMinMove;
+            // keep those as designer performance knobs.)
         }
 
 #if UNITY_EDITOR
@@ -183,9 +190,6 @@ namespace EnemyAI
             if (searchUseSkillMapping)
                 ApplySearchTuningFromSkill();
 
-            // keep auto-sizing responsive in editor (method lives in Sizing partial)
-            try { CacheAgentRadius(true); } catch { /* fine if other partial not compiled yet */ }
-
             // clamps
             searchLookSweepRadius  = Mathf.Max(0.1f, searchLookSweepRadius);
             searchLookHalfAngle    = Mathf.Clamp(searchLookHalfAngle, 1f, 180f);
@@ -193,10 +197,14 @@ namespace EnemyAI
             searchRaysPerSweep     = Mathf.Max(1,   searchRaysPerSweep);
             searchGlobalRayBudgetPerFrame = Mathf.Max(100, searchGlobalRayBudgetPerFrame);
 
-            searchBatchSize        = Mathf.Max(1,   searchBatchSize);
-            searchStepMaxDist      = Mathf.Max(0.1f,searchStepMaxDist);
-            searchMinHopDist       = Mathf.Max(0f,  searchMinHopDist);
-            searchExpandRadius     = Mathf.Max(0.1f,searchExpandRadius);
+            searchBatchSize   = Mathf.Max(1,    searchBatchSize);
+            searchStepMaxDist = Mathf.Max(0.1f, searchStepMaxDist);
+            searchMinHopDist  = Mathf.Max(0f,   searchMinHopDist);
+            searchExpandRadius= Mathf.Max(0.1f, searchExpandRadius);
+
+            // governor clamps
+            searchMarkStrideFrames = Mathf.Max(1, searchMarkStrideFrames);
+            searchTrailMinMove     = Mathf.Max(0f, searchTrailMinMove);
 
             searchLOSStartInset    = Mathf.Max(0f,  searchLOSStartInset);
 
