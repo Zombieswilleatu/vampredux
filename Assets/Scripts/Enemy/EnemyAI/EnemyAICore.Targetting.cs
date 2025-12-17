@@ -1,5 +1,10 @@
 // -----------------------------
 // File: EnemyAICore.Targeting.cs
+// Purpose: Stable target commitments; no short-hop veto.
+// Notes:
+//   • We keep debounce+hold to prevent target flapping.
+//   • SetFixedTarget never rejects near-feet goals — pathing layer now enforces
+//     multi-node follow and repath locks, so movement looks human.
 // -----------------------------
 using UnityEngine;
 
@@ -7,10 +12,15 @@ namespace EnemyAI
 {
     public partial class EnemyAICore
     {
-        // Expose the current absolute/fixed target so states (Search) can read it.
         public Vector3 CurrentFixedTarget => currentTarget;
 
-        // --- initial target selection (called from Core.Start) ---
+        [Header("Target Commit Controls")]
+        [SerializeField] private float minTargetCommitDelta = 0.50f;
+        [SerializeField] private float minTargetHoldSeconds = 0.75f;
+
+        private float _targetHoldUntil = -1f;
+        private Vector3 _lastCommittedTarget;
+
         void InitializeTarget()
         {
             switch (targetMode)
@@ -60,13 +70,8 @@ namespace EnemyAI
             }
         }
 
-        /// <summary>
-        /// Auto-updates the current target ONLY while in Chase.
-        /// Non-chase states keep whatever target they set (Manual/FixedPosition).
-        /// </summary>
         void UpdateTarget()
         {
-            // Keep state-driven destinations intact unless we’re in Chase
             if (CurrentStateId != EnemyState.Chase)
             {
                 if (targetMode == TargetMode.FixedPosition || targetMode == TargetMode.Manual)
@@ -110,8 +115,7 @@ namespace EnemyAI
             }
         }
 
-        // ---------- Public Target API (used by states & external systems) ----------
-
+        // ---------- Public Target API ----------
         public void SetTarget(Vector3 position)
         {
             currentTarget = position;
@@ -134,14 +138,24 @@ namespace EnemyAI
 
         public void SetFixedTarget(Vector3 position)
         {
+            // No short-hop rejection: let pathing handle multi-node follow.
+            bool changedEnough = (position - _lastCommittedTarget).sqrMagnitude >= (minTargetCommitDelta * minTargetCommitDelta);
+            bool holdExpired = Time.time >= _targetHoldUntil;
+
+            if (!changedEnough && !holdExpired)
+                return;
+
             targetPosition = position;
             currentTarget = position;
             targetMode = TargetMode.FixedPosition;
             lastKnownTargetPos = currentTarget;
+
+            _lastCommittedTarget = position;
+            _targetHoldUntil = Time.time + minTargetHoldSeconds;
+
             RequestPath();
         }
 
-        // Used by recovery logic if a goal is unreachable
         void FindAlternativeTarget()
         {
             for (int i = 0; i < 8; i++)
