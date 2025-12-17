@@ -75,49 +75,7 @@ namespace EnemyAI
             return true;
         }
 
-        // ---------- RADIUS CACHE ----------
-        void CacheAgentRadius()
-        {
-            if (agentRadius > 0f) return;
-
-            if (TryGetComponent<CircleCollider2D>(out var cc))
-            {
-                float s = Mathf.Max(Mathf.Abs(transform.localScale.x), Mathf.Abs(transform.localScale.y));
-                agentRadius = Mathf.Abs(cc.radius) * s; return;
-            }
-            if (TryGetComponent<CapsuleCollider2D>(out var cap))
-            {
-                Vector2 size = cap.size;
-                float sx = Mathf.Abs(transform.localScale.x);
-                float sy = Mathf.Abs(transform.localScale.y);
-                agentRadius = Mathf.Max(size.x * sx, size.y * sy) * 0.5f; return;
-            }
-            if (TryGetComponent<BoxCollider2D>(out var bc))
-            {
-                Vector2 size = bc.size;
-                float sx = Mathf.Abs(transform.localScale.x);
-                float sy = Mathf.Abs(transform.localScale.y);
-                agentRadius = Mathf.Max(size.x * sx, size.y * sy) * 0.5f; return;
-            }
-            agentRadius = Mathf.Max(0.3f, fallbackClearanceRadius);
-        }
-
-        // ---------- WAYPOINT ADVANCE OBSERVER ----------
-        void LateUpdate()
-        {
-            if (!hasValidPath || path == null) return;
-
-            if (_lastObservedTargetIndex < 0)
-                _lastObservedTargetIndex = targetIndex;
-
-            if (targetIndex > _lastObservedTargetIndex)
-            {
-                nodesAdvancedSinceRepath += (targetIndex - _lastObservedTargetIndex);
-                _lastObservedTargetIndex = targetIndex;
-            }
-        }
-
-        // ---------- REQUEST LOOP ----------
+        // ---------- PATH REQUESTING ----------
         IEnumerator RequestPathRepeatedly(float initialDelay)
         {
             if (initialDelay > 0f) yield return new WaitForSeconds(initialDelay);
