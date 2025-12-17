@@ -9,17 +9,17 @@ namespace EnemyAI
     public class Pathfinding : MonoBehaviour
     {
         [Header("Performance")]
-        public int maxNodesPerPath = 1200;                 // hard ceiling for direct A*
+        public int maxNodesPerPath = 1200;
         public int maxNodesCoarse = 200;
-        public float hierarchicalThreshold = 8f;           // lowered to prefer hierarchical sooner
+        public float hierarchicalThreshold = 8f;
         [Range(2, 8)] public int coarseGridScale = 4;
 
         [Header("Heuristic")]
-        [Range(0.5f, 2.0f)] public float heuristicScale = 1.25f; // slightly greedy → fewer expansions
+        [Range(0.5f, 2.0f)] public float heuristicScale = 1.25f;
 
         [Header("Robustness")]
         public bool returnPartialIfBudgetHit = true;
-        public float goalProximityEpsilon = 0.75f;         // relaxed stop condition
+        public float goalProximityEpsilon = 0.75f;
         public bool retryWithReducedClearance = true;
         [Range(0.5f, 0.99f)] public float clearanceRetryFactor = 0.85f;
 
@@ -41,6 +41,7 @@ namespace EnemyAI
         public float coarseTimeBudgetMs = 0.75f;
 
         private Grid grid;
+        private IPathfindingCache cacheProvider; // Interface-based cache access
 
         // ---- Coarse cache keyed by (cell, clearance bucket) ----
         struct CoarseKey : IEquatable<CoarseKey>
@@ -59,21 +60,19 @@ namespace EnemyAI
         private readonly Dictionary<Node, Node> _cameFrom = new(2048);
         private readonly Dictionary<Node, float> _gScore = new(2048);
         private readonly HashSet<Node> _closed = new();
-        private readonly MinHeap _open = new(); // (Node,f)
+        private readonly MinHeap _open = new();
         private readonly Node[] _nbuf = new Node[8];
 
-        // ---- Coarse pooled structures (no per-call allocs) ----
-        private readonly List<Vector2Int> _cOpen = new(256);
-        private readonly HashSet<Vector2Int> _cOpenSet = new();
+        // ---- Coarse A* using MinHeap for consistency and better performance ----
+        private readonly MinHeapCoarse _cOpen = new();
         private readonly HashSet<Vector2Int> _cClosed = new();
         private readonly Dictionary<Vector2Int, Vector2Int> _cCameFrom = new(512);
         private readonly Dictionary<Vector2Int, float> _cG = new(512);
-        private readonly Dictionary<Vector2Int, float> _cF = new(512);
 
         // ---- Profiling (fine-grained scopes) ----
         static readonly ProfilerMarker kPF_Find = new("Pathfinding.FindPath");
         static readonly ProfilerMarker kPF_Neigh = new("Pathfinding.GetNeighbours");
-        static readonly ProfilerMarker kPF_Hier = new("Pathfinding.Hierarchical"); // used around dispatch points
+        static readonly ProfilerMarker kPF_Hier = new("Pathfinding.Hierarchical");
 
         private float NodeDiameter => grid != null ? grid.nodeRadius * 2f : 1f;
 
@@ -85,6 +84,11 @@ namespace EnemyAI
             grid = GetComponent<Grid>();
             if (grid == null) grid = FindObjectOfType<Grid>();
             if (grid == null) Debug.LogError("[Pathfinding] No Grid found in scene.", this);
+
+            // Set up interface-based cache provider
+            cacheProvider = grid as IPathfindingCache;
+            if (cacheProvider == null)
+                Debug.LogWarning("[Pathfinding] Grid doesn't implement IPathfindingCache. Cache invalidation will be limited.");
         }
 
         public LayerMask unwalkableMask => grid != null ? grid.unwalkableMask : 0;
@@ -144,14 +148,30 @@ namespace EnemyAI
         }
 
         // -------------------------------
-        // Prewarm
+        // FIX 1: Prewarm methods - improved obsolete marking
         // -------------------------------
+
+        [System.Obsolete("Use PrewarmCoarseBudgeted() instead to avoid performance spikes. This method can cause frame drops.", true)]
         public void PrewarmCoarse(Vector3 center, float clearanceRadius, int radiusCells = 2)
         {
-            if (grid == null) return;
+            // Compile-time error forces users to migrate to the budgeted version
+            throw new System.NotImplementedException("Use PrewarmCoarseBudgeted() instead.");
+        }
+
+        /// <summary>
+        /// Budgeted version that spreads work over multiple frames to avoid spikes
+        /// </summary>
+        public void PrewarmCoarseBudgeted(Vector3 center, float clearanceRadius, int radiusCells = 2)
+        {
+            StartCoroutine(PrewarmCoarseBudgetedRoutine(center, clearanceRadius, radiusCells));
+        }
+
+        private IEnumerator PrewarmCoarseBudgetedRoutine(Vector3 center, float clearanceRadius, int radiusCells = 2)
+        {
+            if (grid == null) yield break;
 
             var fine = grid.NodeFromWorldPoint(center);
-            if (fine == null) return;
+            if (fine == null) yield break;
 
             int cscale = Mathf.Max(1, coarseGridScale);
             var c = new Vector2Int(fine.gridX / cscale, fine.gridY / cscale);
@@ -160,6 +180,9 @@ namespace EnemyAI
             float bucketClearance = clrBucket * grid.nodeRadius;
 
             int rx = Mathf.Clamp(radiusCells, 0, 16), ry = rx;
+
+            int processed = 0;
+            const int BATCH_SIZE = 16; // Process this many cells before yielding
 
             for (int dx = -rx; dx <= rx; dx++)
             {
@@ -181,6 +204,13 @@ namespace EnemyAI
                     var ru = new Vector2Int(p.x + 1, p.y + 1);
                     if (dx < rx && dy < ry && InCoarseBounds(ru))
                         _ = HasBoundaryGate(p, ru, bucketClearance, clrBucket);
+
+                    // Yield every BATCH_SIZE operations to spread work
+                    if (++processed >= BATCH_SIZE)
+                    {
+                        processed = 0;
+                        yield return null;
+                    }
                 }
             }
         }
@@ -197,9 +227,9 @@ namespace EnemyAI
         {
             if (grid == null) { onPathFound?.Invoke(null); yield break; }
 
-            // warm small rings so first frame doesn’t pay cold-cache costs
-            PrewarmCoarse(startPos, clearanceRadius, 2);
-            PrewarmCoarse(targetPos, clearanceRadius, 2);
+            // Use budgeted prewarm to avoid spikes
+            yield return StartCoroutine(PrewarmCoarseBudgetedRoutine(startPos, clearanceRadius, 2));
+            yield return StartCoroutine(PrewarmCoarseBudgetedRoutine(targetPos, clearanceRadius, 2));
 
             // ❶ Budgeted coarse A*
             List<Vector3> coarsePath = null;
@@ -236,8 +266,9 @@ namespace EnemyAI
                 List<Node> seg = null;
                 if (HasClearanceLine(cur, next, clearanceRadius))
                 {
-                    var endNode = grid.NodeFromWorldPoint(next, clearanceRadius);
-                    if (endNode != null) seg = new List<Node> { endNode };
+                    var endNode = grid.NodeFromWorldPoint(next);
+                    if (endNode != null && grid.IsWalkableCached(endNode, clearanceRadius))
+                        seg = new List<Node> { endNode };
                 }
 
                 if (seg == null)
@@ -275,13 +306,15 @@ namespace EnemyAI
         }
 
         // -------------------------------
-        // Budgeted Coarse pathfinding (clustered A*)
+        // Budgeted Coarse pathfinding - now using MinHeap for consistency
         // -------------------------------
         private IEnumerator FindCoarsePathBudgeted(Vector3 startPos, Vector3 targetPos, float clearanceRadius, Action<List<Vector3>> done)
         {
             // clear pooled containers (no new allocations)
-            _cOpen.Clear(); _cOpenSet.Clear(); _cClosed.Clear();
-            _cCameFrom.Clear(); _cG.Clear(); _cF.Clear();
+            _cOpen.Clear();
+            _cClosed.Clear();
+            _cCameFrom.Clear();
+            _cG.Clear();
 
             // refresh coarse walkability cache periodically
             if (Time.time - lastCoarseCacheTime > COARSE_CACHE_LIFETIME)
@@ -302,28 +335,15 @@ namespace EnemyAI
 
             if (startC == goalC) { done(new List<Vector3>(0)); yield break; }
 
-            _cOpen.Add(startC);
-            _cOpenSet.Add(startC);
             _cG[startC] = 0f;
-            _cF[startC] = CoarseHeuristic(startC, goalC);
+            _cOpen.Insert(startC, CoarseHeuristic(startC, goalC));
 
             int expandedSinceYield = 0;
             float t0 = Time.realtimeSinceStartup;
 
             while (_cOpen.Count > 0)
             {
-                // pick best f (simple scan; open is small)
-                int bestIdx = 0;
-                float bestF = GetCoarseScore(_cF, _cOpen[0], float.MaxValue);
-                for (int i = 1; i < _cOpen.Count; i++)
-                {
-                    float f = GetCoarseScore(_cF, _cOpen[i], float.MaxValue);
-                    if (f < bestF) { bestF = f; bestIdx = i; }
-                }
-
-                var current = _cOpen[bestIdx];
-                _cOpen.RemoveAt(bestIdx);
-                _cOpenSet.Remove(current);
+                var current = _cOpen.PopMin();
 
                 if (current == goalC)
                 {
@@ -347,18 +367,15 @@ namespace EnemyAI
                     if (!IsCoarseNodeWalkable(nb, clrBucket, bucketClearance)) continue;
                     if (!HasBoundaryGate(current, nb, bucketClearance, clrBucket)) continue;
 
-                    float tentativeG = GetCoarseScore(_cG, current, float.MaxValue) + CoarseHeuristic(current, nb);
+                    float tentativeG = _cG.TryGetValue(current, out var currentG) ? currentG : float.MaxValue;
+                    tentativeG += CoarseHeuristic(current, nb);
 
-                    if (!_cOpenSet.Contains(nb))
-                    {
-                        _cOpen.Add(nb);
-                        _cOpenSet.Add(nb);
-                    }
-                    else if (tentativeG >= GetCoarseScore(_cG, nb, float.MaxValue)) continue;
+                    if (_cG.TryGetValue(nb, out var existingG) && tentativeG >= existingG) continue;
 
                     _cCameFrom[nb] = current;
                     _cG[nb] = tentativeG;
-                    _cF[nb] = tentativeG + CoarseHeuristic(nb, goalC) * heuristicScale;
+                    float f = tentativeG + CoarseHeuristic(nb, goalC) * heuristicScale;
+                    _cOpen.InsertOrDecrease(nb, f);
                 }
 
                 // yield on budget (prevents multi-frame spikes)
@@ -385,7 +402,7 @@ namespace EnemyAI
         {
             int cx = Mathf.Clamp(coarsePos.x * coarseGridScale + (coarseGridScale / 2), 0, grid.gridSizeXPublic - 1);
             int cy = Mathf.Clamp(coarsePos.y * coarseGridScale + (coarseGridScale / 2), 0, grid.gridSizeYPublic - 1);
-            var n = grid.GetNodeByGridCoords(cx, cy, 0f);
+            var n = grid.GetNodeByGridCoords(cx, cy);
             if (n != null) return n.worldPosition;
 
             float worldX = (cx - grid.gridSizeXPublic * 0.5f + 0.5f) * NodeDiameter;
@@ -416,9 +433,6 @@ namespace EnemyAI
             return Mathf.Sqrt(dx * dx + dy * dy) * coarseGridScale;
         }
 
-        private float GetCoarseScore(Dictionary<Vector2Int, float> scores, Vector2Int node, float defaultValue)
-            => scores.TryGetValue(node, out var v) ? v : defaultValue;
-
         private bool IsCoarseNodeWalkable(Vector2Int coarsePos, int clrBucket, float bucketClearance)
         {
             var key = new CoarseKey { p = coarsePos, clrBucket = clrBucket };
@@ -434,11 +448,12 @@ namespace EnemyAI
                     int fx = x0 + lx, fy = y0 + ly;
                     if ((uint)fx >= grid.gridSizeXPublic || (uint)fy >= grid.gridSizeYPublic) continue;
 
-                    var node = grid.GetNodeByGridCoords(fx, fy, bucketClearance);
+                    var node = grid.GetNodeByGridCoords(fx, fy);
                     if (node != null)
                     {
                         total++;
-                        if (node.walkable) walkableCount++;
+                        if (node.walkable && grid.IsWalkableCached(node, bucketClearance))
+                            walkableCount++;
                     }
                 }
 
@@ -447,7 +462,6 @@ namespace EnemyAI
             return walkable;
         }
 
-        // Require a walkable "gate" along the shared edge; diagonals require both orthogonals (no corner cut)
         private bool HasBoundaryGate(Vector2Int a, Vector2Int b, float bucketClearance, int clrBucket)
         {
             int dx = b.x - a.x;
@@ -467,9 +481,11 @@ namespace EnemyAI
                     if ((uint)fxA >= grid.gridSizeXPublic || (uint)fyA >= grid.gridSizeYPublic) continue;
                     if ((uint)fxB >= grid.gridSizeXPublic || (uint)fyB >= grid.gridSizeYPublic) continue;
 
-                    var nA = grid.GetNodeByGridCoords(fxA, fyA, bucketClearance);
-                    var nB = grid.GetNodeByGridCoords(fxB, fyB, bucketClearance);
-                    if (nA != null && nB != null && nA.walkable && nB.walkable) return true;
+                    var nA = grid.GetNodeByGridCoords(fxA, fyA);
+                    var nB = grid.GetNodeByGridCoords(fxB, fyB);
+                    if (nA != null && nB != null && nA.walkable && nB.walkable &&
+                        grid.IsWalkableCached(nA, bucketClearance) && grid.IsWalkableCached(nB, bucketClearance))
+                        return true;
                 }
                 return false;
             }
@@ -487,9 +503,11 @@ namespace EnemyAI
                     if ((uint)fxA >= grid.gridSizeXPublic || (uint)fyA >= grid.gridSizeYPublic) continue;
                     if ((uint)fxB >= grid.gridSizeXPublic || (uint)fyB >= grid.gridSizeYPublic) continue;
 
-                    var nA = grid.GetNodeByGridCoords(fxA, fyA, bucketClearance);
-                    var nB = grid.GetNodeByGridCoords(fxB, fyB, bucketClearance);
-                    if (nA != null && nB != null && nA.walkable && nB.walkable) return true;
+                    var nA = grid.GetNodeByGridCoords(fxA, fyA);
+                    var nB = grid.GetNodeByGridCoords(fxB, fyB);
+                    if (nA != null && nB != null && nA.walkable && nB.walkable &&
+                        grid.IsWalkableCached(nA, bucketClearance) && grid.IsWalkableCached(nB, bucketClearance))
+                        return true;
                 }
                 return false;
             }
@@ -510,7 +528,7 @@ namespace EnemyAI
         }
 
         // -------------------------------
-        // Fine A* (direct)  — with budgets & escalation hint
+        // Fine A* (direct) — with budgets & escalation hint
         // -------------------------------
         private List<Node> FindPathDirect(Vector3 startPos, Vector3 targetPos, float clearanceRadius, int nodeLimit)
         {
@@ -520,14 +538,15 @@ namespace EnemyAI
 
                 PFLog($"Direct path: start=({startPos.x:0.##},{startPos.y:0.##}) end=({targetPos.x:0.##},{targetPos.y:0.##}) limit={nodeLimit}", this);
 
-                Node start = grid.NodeFromWorldPoint(startPos, clearanceRadius);
-                Node goal = grid.NodeFromWorldPoint(targetPos, clearanceRadius);
+                Node start = grid.NodeFromWorldPoint(startPos);
+                Node goal = grid.NodeFromWorldPoint(targetPos);
 
-                if (start == null || goal == null || !start.walkable || !goal.walkable)
+                if (start == null || goal == null || !start.walkable || !goal.walkable ||
+                    !grid.IsWalkableCached(start, clearanceRadius) || !grid.IsWalkableCached(goal, clearanceRadius))
                     return null;
 
                 if (start.gridX == goal.gridX && start.gridY == goal.gridY)
-                    return new List<Node>(); // already there
+                    return new List<Node>();
 
                 _cameFrom.Clear(); _gScore.Clear(); _closed.Clear(); _open.Clear();
 
@@ -539,16 +558,15 @@ namespace EnemyAI
                 Node bestSoFar = start;
                 float bestDistance = Vector3.Distance(start.worldPosition, goal.worldPosition);
 
-                float t0 = Time.realtimeSinceStartup; // seconds
+                float t0 = Time.realtimeSinceStartup;
 
                 while (_open.Count > 0 && nodesExpanded < nodeLimit)
                 {
-                    // budgets to prevent long lock-ups in a single frame
                     float ms = (Time.realtimeSinceStartup - t0) * 1000f;
                     if (nodesExpanded >= directExpandBudget || ms > directTimeBudgetMs)
                     {
                         _hintEscalateHier = true;
-                        break; // return null → caller escalates to hierarchical
+                        break;
                     }
 
                     Node current = _open.PopMin();
@@ -591,7 +609,7 @@ namespace EnemyAI
                 if (_hintEscalateHier)
                 {
                     PFLog($"Direct search hit budget (expanded={nodesExpanded}, {(Time.realtimeSinceStartup - t0) * 1000f:0.00}ms); escalating.", this);
-                    return null; // caller will escalate
+                    return null;
                 }
 
                 if (returnPartialIfBudgetHit && bestSoFar != start && _cameFrom.ContainsKey(bestSoFar))
@@ -624,7 +642,6 @@ namespace EnemyAI
             return path;
         }
 
-        // Conservative LOS check with clearance; steps along the line sampling grid nodes.
         private bool HasClearanceLine(Vector3 a, Vector3 b, float clearanceRadius)
         {
             if (grid == null) return false;
@@ -637,38 +654,22 @@ namespace EnemyAI
             {
                 float t = (float)i / samples;
                 var p = Vector3.Lerp(a, b, t);
-                var n = grid.NodeFromWorldPoint(p, clearanceRadius);
-                if (n == null || !n.walkable) return false;
+                var n = grid.NodeFromWorldPoint(p);
+                if (n == null || !n.walkable || !grid.IsWalkableCached(n, clearanceRadius)) return false;
             }
             return true;
         }
 
+        // -------------------------------
+        // FIX 2: Interface-based cache clearing (cleaner and faster)
+        // -------------------------------
         public void NotifyEnvironmentChange(Vector3 position, float radius = 5f)
         {
+            // Clear our local coarse cache
             coarseWalkableCache.Clear();
-            if (grid == null) return;
 
-            try
-            {
-                var t = grid.GetType();
-
-                var mRegion = t.GetMethod("InvalidateCacheRegion",
-                    System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic,
-                    null,
-                    new[] { typeof(Vector3), typeof(float) },
-                    null);
-                if (mRegion != null) { mRegion.Invoke(grid, new object[] { position, radius }); return; }
-
-                var mClear1 = t.GetMethod("ClearWalkabilityCache", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic);
-                if (mClear1 != null) { mClear1.Invoke(grid, null); return; }
-
-                var mClear2 = t.GetMethod("ClearCache", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic);
-                if (mClear2 != null) { mClear2.Invoke(grid, null); return; }
-            }
-            catch (Exception ex)
-            {
-                Debug.LogWarning($"[Pathfinding] Cache invalidation reflection failed: {ex.Message}", this);
-            }
+            // Use interface-based cache clearing if available
+            cacheProvider?.InvalidateCacheRegion(position, radius);
         }
 
         [System.Diagnostics.Conditional("UNITY_EDITOR")]
@@ -678,7 +679,95 @@ namespace EnemyAI
         }
 
         // ===============================
-        // Local Min-Heap for A* open set
+        // MinHeap for coarse A* (for consistency with fine A*)
+        // ===============================
+        private sealed class MinHeapCoarse
+        {
+            private struct Entry { public Vector2Int cell; public float f; }
+
+            private readonly List<Entry> _heap = new(256);
+            private readonly Dictionary<Vector2Int, int> _indices = new(512);
+
+            public int Count => _heap.Count;
+
+            public void Clear() { _heap.Clear(); _indices.Clear(); }
+
+            public void Insert(Vector2Int cell, float f)
+            {
+                _heap.Add(new Entry { cell = cell, f = f });
+                int idx = _heap.Count - 1;
+                _indices[cell] = idx;
+                SiftUp(idx);
+            }
+
+            public void InsertOrDecrease(Vector2Int cell, float f)
+            {
+                if (_indices.TryGetValue(cell, out int i))
+                {
+                    if (f >= _heap[i].f) return;
+                    _heap[i] = new Entry { cell = cell, f = f };
+                    SiftUp(i);
+                    return;
+                }
+
+                Insert(cell, f);
+            }
+
+            public Vector2Int PopMin()
+            {
+                if (_heap.Count == 0) return new Vector2Int(-1, -1);
+
+                var min = _heap[0].cell;
+                var last = _heap[_heap.Count - 1];
+                _heap.RemoveAt(_heap.Count - 1);
+                _indices.Remove(min);
+
+                if (_heap.Count > 0)
+                {
+                    _heap[0] = last;
+                    _indices[last.cell] = 0;
+                    SiftDown(0);
+                }
+                return min;
+            }
+
+            private void SiftUp(int i)
+            {
+                while (i > 0)
+                {
+                    int p = (i - 1) >> 1;
+                    if (_heap[p].f <= _heap[i].f) break;
+                    Swap(i, p);
+                    i = p;
+                }
+            }
+
+            private void SiftDown(int i)
+            {
+                while (true)
+                {
+                    int l = i * 2 + 1;
+                    if (l >= _heap.Count) break;
+                    int r = l + 1;
+                    int s = (r < _heap.Count && _heap[r].f < _heap[l].f) ? r : l;
+                    if (_heap[i].f <= _heap[s].f) break;
+                    Swap(i, s);
+                    i = s;
+                }
+            }
+
+            private void Swap(int a, int b)
+            {
+                var t = _heap[a];
+                _heap[a] = _heap[b];
+                _heap[b] = t;
+                _indices[_heap[a].cell] = a;
+                _indices[_heap[b].cell] = b;
+            }
+        }
+
+        // ===============================
+        // Original MinHeap for fine A* (unchanged)
         // ===============================
         private sealed class MinHeap
         {
